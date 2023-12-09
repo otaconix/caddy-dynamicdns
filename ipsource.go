@@ -34,6 +34,7 @@ func init() {
 	caddy.RegisterModule(SimpleHTTP{})
 	caddy.RegisterModule(UPnP{})
 	caddy.RegisterModule(NetInterface{})
+	caddy.RegisterModule(Static{})
 }
 
 // IPSource is a type that can get IP addresses.
@@ -307,6 +308,71 @@ func (u NetInterface) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP
 	return ips, nil
 }
 
+type Static struct {
+	IPs []net.IP `json:"ips,omitempty"`
+
+	logger *zap.Logger
+}
+
+func (Static) CaddyModule() caddy.ModuleInfo {
+	return caddy.ModuleInfo{
+		ID:  "dynamic_dns.ip_sources.static",
+		New: func() caddy.Module { return new(Static) },
+	}
+}
+
+func (s Static) GetIPs(ctx context.Context, versions IPVersions) ([]net.IP, error) {
+	if versions.V4Enabled() && versions.V6Enabled() {
+		return s.IPs, nil
+	}
+
+	ips := []net.IP{}
+
+	for _, ip := range s.IPs {
+		if versions.V4Enabled() && ip.To4() != nil {
+			ips = append(ips, ip)
+			continue
+		}
+
+		if versions.V6Enabled() && ip.To16() != nil {
+			ips = append(ips, ip)
+			continue
+		}
+	}
+
+	return ips, nil
+}
+
+func (s *Static) Provision(ctx caddy.Context) error {
+	s.logger = ctx.Logger(s)
+
+	s.logger.Info(fmt.Sprintf("Configured %d static IPs", len(s.IPs)))
+
+	return nil
+}
+
+func (s *Static) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	d.Next() // skip directive name
+
+	invalid_ips := []string{}
+	for d.NextArg() {
+		raw_ip := d.Val()
+		ip := net.ParseIP(raw_ip)
+
+		if ip == nil {
+			invalid_ips = append(invalid_ips, raw_ip)
+		}
+
+		s.IPs = append(s.IPs, ip)
+	}
+
+	if len(invalid_ips) != 0 {
+		return fmt.Errorf("Invalid static IPs: %v", invalid_ips)
+	}
+
+	return nil
+}
+
 // Interface guards
 var (
 	_ IPSource              = (*SimpleHTTP)(nil)
@@ -320,4 +386,8 @@ var (
 	_ IPSource              = (*NetInterface)(nil)
 	_ caddy.Provisioner     = (*NetInterface)(nil)
 	_ caddyfile.Unmarshaler = (*NetInterface)(nil)
+
+	_ IPSource              = (*Static)(nil)
+	_ caddy.Provisioner     = (*Static)(nil)
+	_ caddyfile.Unmarshaler = (*Static)(nil)
 )
